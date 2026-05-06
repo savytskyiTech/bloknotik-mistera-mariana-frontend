@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Eye, EyeOff, GraduationCap, ArrowRight, Loader2 } from 'lucide-react';
+import { api } from '../../lib/api';
 
 interface LoginPageProps {
-  onLogin?: () => void;
+  onLogin?: (user: { id: string; name: string; role: string; assigned_instructor_id?: string }) => void;
 }
 
 export function LoginPage({ onLogin }: LoginPageProps) {
@@ -20,10 +21,14 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       return;
     }
     setIsLoading(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    setIsLoading(false);
-    // Demo: any non-empty credentials succeed
-    onLogin?.();
+    try {
+      const data = await api.login(email, password);
+      onLogin?.(data.user);
+    } catch (err: any) {
+      setError(err.message || 'Помилка входу');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

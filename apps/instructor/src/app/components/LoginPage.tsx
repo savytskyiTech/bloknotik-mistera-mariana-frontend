@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Car, ArrowRight, Loader2, Shield } from 'lucide-react';
+import { api } from '../../lib/api';
 
 interface LoginPageProps {
-  onLogin?: () => void;
+  onLogin?: (user: { id: string; name: string; role: string }) => void;
 }
 
 export function LoginPage({ onLogin }: LoginPageProps) {
@@ -20,9 +21,19 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       return;
     }
     setIsLoading(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    setIsLoading(false);
-    onLogin?.();
+    try {
+      const data = await api.login(email, password);
+      if (data.user.role !== 'instructor') {
+        api.clearSession();
+        setError('Цей акаунт не має доступу до кабінету інструктора');
+        return;
+      }
+      onLogin?.(data.user);
+    } catch (err: any) {
+      setError(err.message || 'Помилка входу');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

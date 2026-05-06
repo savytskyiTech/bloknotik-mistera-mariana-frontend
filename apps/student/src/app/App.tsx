@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { LoginPage } from './components/LoginPage';
-import { addDays, addWeeks, startOfWeek, isBefore, differenceInHours } from 'date-fns';
+import { isBefore, differenceInHours, format, parseISO } from 'date-fns';
 import { Calendar as CalendarIcon, MessageCircle, Bell, BookOpen, Settings, ChevronRight } from 'lucide-react';
 import { Toaster, toast } from 'sonner';
 import { LessonCard } from './components/LessonCard';
@@ -13,6 +13,14 @@ import { TimeSlotPicker } from './components/TimeSlotPicker';
 import { Banner } from './components/Banner';
 import { Card } from './components/Card';
 import { Button } from './components/Button';
+import { api } from '../lib/api';
+
+interface User {
+  id: string;
+  name: string;
+  role: string;
+  assigned_instructor_id?: string;
+}
 
 interface Lesson {
   id: string;
@@ -20,6 +28,7 @@ interface Lesson {
   startTime: string;
   endTime: string;
   instructorName: string;
+  bookingId: string;
 }
 
 interface TimeSlot {
@@ -35,7 +44,11 @@ interface Note {
 }
 
 export default function App() {
+  // ─── Auth state ────────────────────────────────
+  const [user, setUser] = useState<User | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  // ─── UI state ──────────────────────────────────
   const [activeTab, setActiveTab] = useState<'home' | 'schedule' | 'profile'>('home');
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
@@ -43,99 +56,165 @@ export default function App() {
   const [selectedSlot, setSelectedSlot] = useState<string>();
   const [bookingStep, setBookingStep] = useState<1 | 2>(1);
   const [notifications, setNotifications] = useState(true);
-  const [lessons, setLessons] = useState<Lesson[]>([
-    {
-      id: '1',
-      date: addDays(new Date(), 2),
-      startTime: '10:00',
-      endTime: '11:30',
-      instructorName: 'Олексій Петренко',
-    },
-  ]);
-  const [notes] = useState<Note[]>([
-    {
-      id: '1',
-      date: addDays(new Date(), -3),
-      text: 'Чудова робота з паралельною парковкою! Продовжуйте практикуватись.',
-    },
-    {
-      id: '2',
-      date: addDays(new Date(), -10),
-      text: 'Потрібно попрацювати над плавністю переключення передач.',
-    },
-  ]);
 
-  if (!isLoggedIn) return <LoginPage onLogin={() => setIsLoggedIn(true)} />;
+  // ─── Data from API ─────────────────────────────
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [lessonsThisWeek, setLessonsThisWeek] = useState(0);
+  const [timeSlots, setTimeSlots] = useState<TimeSlot[]>([]);
+  const [loading, setLoading] = useState(false);
 
+  // ─── Restore session ──────────────────────────
+  useEffect(() => {
+    if (api.restoreSession()) {
+      const storedUser = api.getStoredUser();
+      if (storedUser) {
+        setUser(storedUser);
+        setIsLoggedIn(true);
+      }
+    }
+  }, []);
+
+  // ─── Fetch data when logged in ────────────────
+  const fetchData = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      // Fetch bookings
+      const bookings = await api.getBookings();
+      const mapped: Lesson[] = bookings
+        .filter((b: any) => b.status === 'confirmed')
+        .map((b: any) => ({
+          id: b.id,
+          date: parseISO(b.slot.start_time),
+          startTime: format(parseISO(b.slot.start_time), 'HH:mm'),
+          endTime: format(parseISO(b.slot.end_time), 'HH:mm'),
+          instructorName: b.slot.instructor?.name || 'Інструктор',
+          bookingId: b.id,
+        }))
+        .sort((a: Lesson, b: Lesson) => a.date.getTime() - b.date.getTime());
+      setLessons(mapped);
+
+      // Fetch availability
+      const availability = await api.getAvailability();
+      setLessonsThisWeek(availability.lessons_this_week);
+
+      // Fetch notes
+      const fetchedNotes = await api.getNotes(user.id);
+      setNotes(
+        fetchedNotes.map((n: any) => ({
+          id: n.id,
+          date: parseISO(n.created_at),
+          text: n.text,
+        }))
+      );
+    } catch (err: any) {
+      if (err.code === 'UNAUTHORIZED') {
+        handleLogout();
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (isLoggedIn) fetchData();
+  }, [isLoggedIn, fetchData]);
+
+  // ─── Auth handlers ────────────────────────────
+
+  const handleLogin = (userData: User) => {
+    setUser(userData);
+    setIsLoggedIn(true);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch { /* ignore */ }
+    setUser(null);
+    setIsLoggedIn(false);
+    setLessons([]);
+    setNotes([]);
+  };
+
+  if (!isLoggedIn) return <LoginPage onLogin={handleLogin as any} />;
+
+  // ─── Derived state ────────────────────────────
 
   const nextLesson = lessons.length > 0 ? lessons[0] : null;
-
-  const currentWeekStart = startOfWeek(new Date(), { weekStartsOn: 1 });
-  const lessonsThisWeek = lessons.filter(
-    (lesson) => lesson.date >= currentWeekStart && lesson.date < addWeeks(currentWeekStart, 1)
-  ).length;
-
-  const timeSlots: TimeSlot[] = [
-    { id: '1', time: '08:00 - 09:30', available: true },
-    { id: '2', time: '10:00 - 11:30', available: false },
-    { id: '3', time: '12:00 - 13:30', available: true },
-    { id: '4', time: '14:00 - 15:30', available: true },
-    { id: '5', time: '16:00 - 17:30', available: false },
-    { id: '6', time: '18:00 - 19:30', available: true },
-  ];
-
-  const hasAvailableSlots = timeSlots.some((slot) => slot.available);
   const canBookMore = lessonsThisWeek < 2;
+  const hasAvailableSlots = timeSlots.some((slot) => slot.available);
+
+  // ─── Booking flow ─────────────────────────────
 
   const handleOpenBooking = () => {
     setBookingModalOpen(true);
     setBookingStep(1);
     setSelectedDate(undefined);
     setSelectedSlot(undefined);
+    setTimeSlots([]);
   };
 
-  const handleDateSelect = (date: Date | undefined) => {
+  const handleDateSelect = async (date: Date | undefined) => {
     setSelectedDate(date);
-    if (date) {
-      setBookingStep(2);
+    if (date && user?.assigned_instructor_id) {
+      // Fetch real slots for this date from the API
+      try {
+        const dateStr = format(date, 'yyyy-MM-dd');
+        const slots = await api.getSlots({
+          instructor_id: user.assigned_instructor_id,
+          date: dateStr,
+        });
+        setTimeSlots(
+          slots.map((s: any) => ({
+            id: s.id,
+            time: `${format(parseISO(s.start_time), 'HH:mm')} - ${format(parseISO(s.end_time), 'HH:mm')}`,
+            available: s.status === 'available',
+          }))
+        );
+        setBookingStep(2);
+      } catch {
+        toast.error('Не вдалось завантажити слоти');
+      }
     }
   };
 
-  const handleConfirmBooking = () => {
+  const handleConfirmBooking = async () => {
     if (!selectedDate || !selectedSlot) return;
-
-    const slot = timeSlots.find((s) => s.id === selectedSlot);
-    if (!slot) return;
-
-    const [startTime, endTime] = slot.time.split(' - ');
-
-    const newLesson: Lesson = {
-      id: Date.now().toString(),
-      date: selectedDate,
-      startTime,
-      endTime,
-      instructorName: 'Олексій Петренко',
-    };
-
-    setLessons([...lessons, newLesson].sort((a, b) => a.date.getTime() - b.date.getTime()));
-    setBookingModalOpen(false);
-    toast.success('Заняття успішно заброньовано!', {
-      className: 'bg-white/80 backdrop-blur-xl border-white/40 shadow-float rounded-2xl text-foreground font-medium'
-    });
+    try {
+      await api.createBooking(selectedSlot);
+      setBookingModalOpen(false);
+      toast.success('Заняття успішно заброньовано!', {
+        className: 'bg-white/80 backdrop-blur-xl border-white/40 shadow-float rounded-2xl text-foreground font-medium'
+      });
+      fetchData(); // Refresh data
+    } catch (err: any) {
+      if (err.code === 'CONFLICT') {
+        toast.error('Слот вже зайнято. Оберіть інший.');
+      } else {
+        toast.error(err.message || 'Помилка бронювання');
+      }
+    }
   };
 
-  const handleJoinWaitlist = () => {
-    setBookingModalOpen(false);
-    toast.info('Ви додані до черги. Повідомимо, коли з\'явиться вільне місце.', {
-      className: 'bg-white/80 backdrop-blur-xl border-white/40 shadow-float rounded-2xl text-foreground font-medium'
-    });
+  const handleJoinWaitlist = async () => {
+    if (!selectedDate || !user?.assigned_instructor_id) return;
+    try {
+      const dateStr = format(selectedDate, 'yyyy-MM-dd');
+      const result = await api.joinWaitlist(dateStr, user.assigned_instructor_id);
+      setBookingModalOpen(false);
+      toast.info(`Ви додані до черги (позиція: ${result.position}). Повідомимо, коли з'явиться вільне місце.`, {
+        className: 'bg-white/80 backdrop-blur-xl border-white/40 shadow-float rounded-2xl text-foreground font-medium'
+      });
+    } catch (err: any) {
+      toast.error(err.message || 'Не вдалось стати в чергу');
+    }
   };
 
   const handleCancelLesson = () => {
     if (!nextLesson) return;
-
     const hoursUntilLesson = differenceInHours(nextLesson.date, new Date());
-
     if (hoursUntilLesson < 24) {
       setCancelModalOpen(true);
     } else {
@@ -143,15 +222,22 @@ export default function App() {
     }
   };
 
-  const confirmCancel = () => {
+  const confirmCancel = async () => {
     if (!nextLesson) return;
-
-    setLessons(lessons.filter((lesson) => lesson.id !== nextLesson.id));
-    setCancelModalOpen(false);
-    toast.success('Заняття скасовано', {
-      className: 'bg-white/80 backdrop-blur-xl border-white/40 shadow-float rounded-2xl text-foreground font-medium'
-    });
+    try {
+      await api.cancelBooking(nextLesson.bookingId);
+      setCancelModalOpen(false);
+      toast.success('Заняття скасовано', {
+        className: 'bg-white/80 backdrop-blur-xl border-white/40 shadow-float rounded-2xl text-foreground font-medium'
+      });
+      fetchData(); // Refresh data
+    } catch (err: any) {
+      toast.error(err.message || 'Не вдалось скасувати заняття');
+      setCancelModalOpen(false);
+    }
   };
+
+  const firstName = user?.name?.split(' ')[0] || 'Учень';
 
   return (
     <div className="min-h-screen bg-background pb-32 overflow-x-hidden">
@@ -166,14 +252,14 @@ export default function App() {
       <header className="px-6 pt-12 pb-6 sticky top-0 z-20 bg-background/80 backdrop-blur-2xl border-b border-border/50">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm font-medium text-muted-foreground mb-1">Вітаємо, Максиме 👋</p>
+            <p className="text-sm font-medium text-muted-foreground mb-1">Вітаємо, {firstName} 👋</p>
             <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/70">
               GoDrive
             </h1>
           </div>
-          <div className="w-12 h-12 rounded-full bg-secondary flex items-center justify-center border-2 border-white shadow-sm overflow-hidden">
-             <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop&crop=faces" alt="User avatar" className="w-full h-full object-cover" />
-          </div>
+          <button onClick={handleLogout} className="w-12 h-12 rounded-full bg-secondary flex items-center justify-center border-2 border-white shadow-sm overflow-hidden">
+             <span className="text-lg font-bold text-foreground">{firstName.charAt(0)}</span>
+          </button>
         </div>
       </header>
 
@@ -334,17 +420,21 @@ export default function App() {
               </div>
               Нотатки інструктора
             </h3>
-            <div className="space-y-4 mt-2">
-              {notes.map((note) => (
-                <div key={note.id} className="relative pl-5 py-2">
-                  <div className="absolute left-0 top-2 bottom-2 w-1 bg-primary rounded-full" />
-                  <p className="text-[15px] text-foreground leading-relaxed font-medium">{note.text}</p>
-                  <p className="text-xs font-semibold text-primary mt-2">
-                    {note.date.toLocaleDateString('uk-UA')}
-                  </p>
-                </div>
-              ))}
-            </div>
+            {notes.length === 0 ? (
+              <p className="text-muted-foreground text-sm">Нотаток ще немає</p>
+            ) : (
+              <div className="space-y-4 mt-2">
+                {notes.map((note) => (
+                  <div key={note.id} className="relative pl-5 py-2">
+                    <div className="absolute left-0 top-2 bottom-2 w-1 bg-primary rounded-full" />
+                    <p className="text-[15px] text-foreground leading-relaxed font-medium">{note.text}</p>
+                    <p className="text-xs font-semibold text-primary mt-2">
+                      {note.date.toLocaleDateString('uk-UA')}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
         </main>
       )}

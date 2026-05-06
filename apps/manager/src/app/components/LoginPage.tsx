@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Eye, EyeOff, LayoutDashboard, ArrowRight, Loader2, Users, Calendar, BarChart3 } from 'lucide-react';
+import { api } from '../../lib/api';
 
 interface LoginPageProps {
-  onLogin?: () => void;
+  onLogin?: (user: { id: string; name: string; role: string }) => void;
 }
 
 const FEATURES = [
@@ -26,9 +27,19 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       return;
     }
     setIsLoading(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    setIsLoading(false);
-    onLogin?.();
+    try {
+      const data = await api.login(email, password);
+      if (data.user.role !== 'manager') {
+        api.clearSession();
+        setError('Цей акаунт не має доступу до кабінету менеджера');
+        return;
+      }
+      onLogin?.(data.user);
+    } catch (err: any) {
+      setError(err.message || 'Помилка входу');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
